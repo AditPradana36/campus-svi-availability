@@ -121,7 +121,7 @@ All in `campus_svi/config.py`.
 
 | Setting | Default | Effect |
 |---|---|---|
-| `CELL_SIZE_M` | 100 | Analysis resolution. Does not change Google request count (tile-based) |
+| `CELL_SIZE_M` | 10 | Analysis resolution. Does not change Google request count (tile-based) |
 | `MLY_SEED_SIZE_M` | 500 | Atomic Mapillary fetch unit; also the resume granularity |
 | `MLY_PAGE_LIMIT` | 500 | Starting page size; ratchets down on refusal |
 | `MLY_MAX_DEPTH` | 10 | Quadtree ceiling inside a seed box |
