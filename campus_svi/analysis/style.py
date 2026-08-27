@@ -53,5 +53,25 @@ PROGRAMME_LABELS = {
     "third_party": "User upload",
 }
 
+# LISA cluster quadrants. Red for coverage clusters, blue for gap clusters,
+# pale for the outliers, near-white for cells with no signal — so the eye goes
+# to the clusters and "not significant" reads as absence rather than a
+# category competing for attention.
+QUADRANT_ORDER = ["HH", "LL", "LH", "HL", "ns"]
+QUADRANT_COLORS = {
+    "HH": "#8c2f2f",
+    "LL": "#31688e",
+    "LH": "#9ecae1",
+    "HL": "#e6a3a3",
+    "ns": "#efefef",
+}
+QUADRANT_LABELS = {
+    "HH": "High-High",
+    "LL": "Low-Low",
+    "LH": "Low-High",
+    "HL": "High-Low",
+    "ns": "Not significant",
+}
+
 CMAP = ps.CMAP_SEQ        # one sequential ramp everywhere
 CMAP_DIV = ps.CMAP_DIV    # diverging only where zero is a real midpoint

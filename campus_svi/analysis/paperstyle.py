@@ -1,5 +1,5 @@
 """
-paperstyle.py
+paperstyle.py_
 -------------
 Reusable matplotlib/seaborn styling that reproduces the figure conventions
 observed in Nature-style benchmark papers:

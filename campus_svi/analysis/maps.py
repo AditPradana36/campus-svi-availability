@@ -27,6 +27,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
@@ -35,6 +36,14 @@ from matplotlib.patches import Patch
 from campus_svi import boundaries, config, registry
 from campus_svi.analysis import metrics, paperstyle as ps
 from campus_svi.analysis import style as st
+
+#: Resolution of the rasterised cell layer inside the PDF. Text, boundaries
+#: and scale bars stay vector at any value. 600 is comfortably above the
+#: 300 dpi most journals ask for, so panels stay crisp when a reader zooms.
+RASTER_DPI = 600
+#: PNG review copies. Below the PDF raster: a 40-panel PNG at 600 dpi is a
+#: very large file for something only used to check the figure on screen.
+PNG_DPI = 450
 
 
 # --------------------------------------------------------------------------
@@ -51,14 +60,22 @@ def _localise(gdf, poly_utm, crs_m):
     return g, translate(poly_utm, -c.x, -c.y)
 
 
-def prepare(campus_ids, with_distance: bool = False):
-    """Load and localise each campus once. Returns {campus_id: (cells, poly)}."""
+def prepare(campus_ids, with_distance: bool = False, augment=None):
+    """Load and localise each campus once. Returns {campus_id: (cells, poly)}.
+
+    ``augment(campus_id, cells) -> cells`` runs before localisation, for
+    columns computed per campus at draw time rather than stored — local
+    Moran's I, for instance, which is too expensive to precompute for every
+    campus and column combination.
+    """
     out = {}
     for cid in campus_ids:
         try:
             cells = metrics.load_cells(cid, with_distance=with_distance)
         except FileNotFoundError:
             continue
+        if augment is not None:
+            cells = augment(cid, cells)
         bnd = boundaries.load(cid)
         crs_m = boundaries.utm_crs(bnd)
         poly = bnd.to_crs(crs_m).geometry.iloc[0]
@@ -126,7 +143,9 @@ def small_multiples(campus_ids, column: str, kind: str = "continuous",
                     labels: dict = None, title: str = "", cbar_label: str = "",
                     panel_letters: bool = False, show_boundary: bool = True,
                     show_area: bool = False, margin: float = 1.06,
-                    rasterize: bool = True, sort_by=None, save: str = None):
+                    rasterize: bool = True, sort_by=None, augment=None,
+                    prepared: dict = None, log: bool = False,
+                    dpi: int = None, save: str = None):
     """One map face per campus, each fitted to its own boundary.
 
     kind
@@ -139,13 +158,21 @@ def small_multiples(campus_ids, column: str, kind: str = "continuous",
     width = width or ps.FULL_W
     cmap = cmap or st.CMAP
 
-    prepared = prepare(campus_ids)
+    # Callers that already ran prepare() — to derive colour limits from an
+    # augmented column, say — pass it back rather than paying for the augment
+    # a second time.
+    if prepared is None:
+        prepared = prepare(campus_ids, augment=augment)
     ids = [c for c in campus_ids if c in prepared]
     if not ids:
         raise ValueError("No campuses with cell data.")
+    # Canonical order by default, so a campus keeps its position across every
+    # figure in the set. sort_by overrides it deliberately.
     if sort_by is not None:
         rank = {c: i for i, c in enumerate(sort_by)}
         ids.sort(key=lambda c: rank.get(c, 1e9))
+    else:
+        ids = registry.ordered(ids)
 
     areas = {}
     if show_area:
@@ -172,10 +199,21 @@ def small_multiples(campus_ids, column: str, kind: str = "continuous",
         vals = vals[np.isfinite(vals)]
         if not len(vals):
             raise ValueError(f"No finite values for '{column}'.")
-        vmin = float(vals.min()) if vmin is None else vmin
-        vmax = float(vals.max()) if vmax is None else vmax
-        if vmin == vmax:
-            vmax = vmin + 1e-9
+        if log:
+            # Counts are heavily right-skewed: a handful of dense cells would
+            # otherwise flatten every other cell to the bottom of the ramp.
+            # Zero has no place on a log scale and is drawn as "no data".
+            pos = vals[vals > 0]
+            vmin = float(pos.min()) if (vmin is None and len(pos)) else (vmin or 1)
+            vmax = float(pos.max()) if (vmax is None and len(pos)) else (vmax or 1)
+            vmin = max(vmin, 1e-9)
+            norm = mcolors.LogNorm(vmin=vmin, vmax=max(vmax, vmin * 10))
+        else:
+            vmin = float(vals.min()) if vmin is None else vmin
+            vmax = float(vals.max()) if vmax is None else vmax
+            if vmin == vmax:
+                vmax = vmin + 1e-9
+            norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
     for k, cid in enumerate(ids):
         ax = axes[k]
@@ -183,7 +221,10 @@ def small_multiples(campus_ids, column: str, kind: str = "continuous",
 
         if kind == "continuous":
             if column in cells.columns and cells[column].notna().any():
-                cells.plot(ax=ax, column=column, cmap=cmap, vmin=vmin, vmax=vmax,
+                cells = cells.copy()
+                if log:
+                    cells.loc[cells[column] <= 0, column] = np.nan
+                cells.plot(ax=ax, column=column, cmap=cmap, norm=norm,
                            linewidth=0, antialiased=False, rasterized=rasterize,
                            missing_kwds={"color": "#f4f4f4"})
             else:
@@ -231,20 +272,20 @@ def small_multiples(campus_ids, column: str, kind: str = "continuous",
 
     # One colorbar or legend for the whole figure, never per panel.
     if kind == "continuous":
-        sm = plt.cm.ScalarMappable(cmap=cmap,
-                                   norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         cax = fig.add_axes([0.10, 0.038, 0.30, 0.011])
         cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
         cb.set_label(cbar_label or column, fontsize=6, labelpad=2)
         cb.ax.tick_params(labelsize=5.6, length=2, pad=1.5)
         cb.outline.set_visible(False)
-        cb.set_ticks(np.linspace(vmin, vmax, 4))
+        if not log:
+            cb.set_ticks(np.linspace(vmin, vmax, 4))
     elif kind == "categorical":
         handles = [Patch(facecolor=(colors or {}).get(c, "#ccc"), edgecolor="none",
                          label=(labels or {}).get(c, c.replace("_", " ")))
                    for c in (order or [])]
         fig.legend(handles=handles, loc="lower left", bbox_to_anchor=(0.02, 0.005),
-                   ncol=min(4, len(handles)), frameon=False, fontsize=6,
+                   ncol=min(5, len(handles)), frameon=False, fontsize=6,
                    handlelength=1.1, handleheight=1.0, columnspacing=1.4,
                    borderpad=0)
 
@@ -252,11 +293,12 @@ def small_multiples(campus_ids, column: str, kind: str = "continuous",
              va="bottom", fontsize=5.2, color="#6f6f6f", style="italic")
 
     if save:
-        save_figure(fig, save)
+        save_figure(fig, save, dpi=dpi)
     return fig, axes
 
 
-def save_figure(fig, stem: str, outdir=None, dpi: int = 400):
+def save_figure(fig, stem: str, outdir=None, dpi: int = None,
+                png_dpi: int = None):
     """PDF for the manuscript, PNG for review.
 
     dpi governs the rasterised cell layer inside the PDF; text and boundaries
@@ -264,9 +306,11 @@ def save_figure(fig, stem: str, outdir=None, dpi: int = 400):
     """
     outdir = Path(outdir) if outdir else config.DATA_DIR / "analysis" / "figures"
     outdir.mkdir(parents=True, exist_ok=True)
+    dpi = dpi or RASTER_DPI
+    png_dpi = png_dpi or PNG_DPI
     # bbox_inches=None: explicit subplots_adjust margins would otherwise be
     # overridden by "tight", which also shifts figure-coordinate annotations.
     fig.savefig(outdir / f"{stem}.pdf", bbox_inches=None, dpi=dpi)
-    fig.savefig(outdir / f"{stem}.png", dpi=300, bbox_inches=None)
+    fig.savefig(outdir / f"{stem}.png", dpi=png_dpi, bbox_inches=None)
     print(f"  -> figures/{stem}.pdf, figures/{stem}.png")
     return outdir / f"{stem}.pdf"

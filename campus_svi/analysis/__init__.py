@@ -20,4 +20,4 @@ Layout:
 
 from campus_svi.analysis import paperstyle, style  # noqa: F401
 
-__all__ = ["metrics", "maps", "figures", "style", "paperstyle"]
+__all__ = ["metrics", "maps", "figures", "studyarea", "style", "paperstyle"]

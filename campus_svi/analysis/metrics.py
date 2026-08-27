@@ -369,6 +369,220 @@ def autocorrelation_table(campus_ids, columns=("either_coverage",
 
 
 # --------------------------------------------------------------------------
+# Local Moran's I (LISA)
+# --------------------------------------------------------------------------
+
+QUADRANTS = ["HH", "LH", "LL", "HL", "ns"]
+QUADRANT_LABELS = {
+    "HH": "High-High (covered cluster)",
+    "LL": "Low-Low (gap cluster)",
+    "LH": "Low-High (outlier in cluster)",
+    "HL": "High-Low (isolated coverage)",
+    "ns": "Not significant",
+}
+
+
+def local_morans(cells, column: str, queen: bool = True,
+                 permutations: int = 199, seed: int = 0,
+                 alpha: float = 0.05) -> pd.DataFrame:
+    """Local Moran's I per cell, with cluster quadrant.
+
+    Global Moran's I says whether a campus is clustered; it cannot say *where*.
+    The local statistic decomposes it per cell, so a coverage gap in the campus
+    core becomes visible as a Low-Low cluster rather than being averaged into
+    a single number.
+
+    Quadrants come from the sign of the cell's own standardised value against
+    its neighbourhood mean: HH covered cells among covered neighbours, LL gaps
+    among gaps, and LH/HL the outliers. Cells that fail the permutation test at
+    ``alpha`` are labelled ``ns`` and should be read as no signal rather than
+    as a weak one.
+
+    Weights are row-standardised lattice adjacency taken from the row/column
+    indices, so no spatial-weights library is needed and adjacency is exact.
+    """
+    df = cells[["grid_id", "row", "col", column]].dropna().reset_index(drop=True)
+    n = len(df)
+    if n < 20:
+        return pd.DataFrame(columns=["grid_id", "Ii", "z", "lag_z",
+                                     "quadrant", "p_sim"])
+
+    pos = {(int(r), int(c)): i for i, (r, c) in
+           enumerate(zip(df["row"], df["col"]))}
+    x = df[column].to_numpy(float)
+    z = x - x.mean()
+    sd = z.std()
+    if sd == 0:
+        out = df[["grid_id"]].copy()
+        out["Ii"] = np.nan
+        out["z"] = 0.0
+        out["lag_z"] = 0.0
+        out["quadrant"] = "ns"
+        out["p_sim"] = np.nan
+        return out
+
+    offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    if queen:
+        offsets += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    # Flat (source, neighbour) index pairs rather than a list of lists: the
+    # spatial lag then reduces to one bincount per permutation, which is the
+    # difference between this running in seconds and in minutes at 20 m.
+    ii, jj = [], []
+    for (r, c), i in pos.items():
+        for dr, dc in offsets:
+            j = pos.get((r + dr, c + dc))
+            if j is not None:
+                ii.append(i)
+                jj.append(j)
+    if not ii:
+        out = df[["grid_id"]].copy()
+        out["Ii"] = np.nan
+        out["z"] = 0.0
+        out["lag_z"] = 0.0
+        out["quadrant"] = "ns"
+        out["p_sim"] = np.nan
+        return out
+
+    ii = np.asarray(ii)
+    jj = np.asarray(jj)
+    deg = np.bincount(ii, minlength=n).astype(float)
+    deg[deg == 0] = 1.0                      # isolated cells get zero lag
+
+    m2 = (z ** 2).sum() / n
+
+    def _lag(vec):
+        """Row-standardised spatial lag: mean of each cell's neighbours."""
+        return np.bincount(ii, weights=vec[jj], minlength=n) / deg
+
+    lag = _lag(z)
+    Ii = z * lag / m2
+
+    # Conditional permutation: hold each cell fixed, shuffle the rest, and ask
+    # how often a random neighbourhood is this extreme.
+    rng = np.random.default_rng(seed)
+    counts = np.zeros(n)
+    abs_Ii = np.abs(Ii)
+    for _ in range(permutations):
+        perm = rng.permutation(z)
+        counts += np.abs(z * _lag(perm) / m2) >= abs_Ii
+    p_sim = (counts + 1) / (permutations + 1)
+
+    zs = z / sd
+    lag_s = lag / sd
+    quad = np.where((zs > 0) & (lag_s > 0), "HH",
+           np.where((zs < 0) & (lag_s < 0), "LL",
+           np.where((zs < 0) & (lag_s > 0), "LH", "HL")))
+    quad = np.where(p_sim < alpha, quad, "ns")
+
+    out = df[["grid_id"]].copy()
+    out["Ii"] = Ii
+    out["z"] = zs
+    out["lag_z"] = lag_s
+    out["quadrant"] = quad
+    out["p_sim"] = p_sim
+    return out
+
+
+def local_morans_augmenter(column: str, prefix: str, **kw):
+    """Return an ``augment(campus_id, cells)`` callable for the map engine.
+
+    Computed lazily per campus at draw time, because the permutation test is
+    expensive and only the campuses actually being mapped need it.
+    """
+    def augment(campus_id, cells):
+        res = local_morans(cells, column, **kw)
+        if res.empty:
+            cells = cells.copy()
+            cells[f"{prefix}_Ii"] = np.nan
+            cells[f"{prefix}_quadrant"] = "ns"
+            return cells
+        res = res.rename(columns={"Ii": f"{prefix}_Ii",
+                                  "quadrant": f"{prefix}_quadrant",
+                                  "p_sim": f"{prefix}_p"})
+        keep = ["grid_id", f"{prefix}_Ii", f"{prefix}_quadrant", f"{prefix}_p"]
+        return cells.merge(res[keep], on="grid_id", how="left")
+    return augment
+
+
+def local_morans_summary(campus_ids, column: str = "mly_count",
+                         permutations: int = 199) -> pd.DataFrame:
+    """Share of cells in each LISA quadrant, per campus."""
+    from campus_svi import cells as cellsmod
+
+    rows = []
+    for cid in campus_ids:
+        c = cellsmod.load_cells(cid)
+        if column not in c.columns:
+            continue
+        res = local_morans(c, column, permutations=permutations)
+        row = {"campus_id": cid, "n_cells": len(c)}
+        if not res.empty:
+            vc = res["quadrant"].value_counts(normalize=True)
+            for q in QUADRANTS:
+                row[f"prop_{q}"] = float(vc.get(q, 0.0))
+            row["prop_significant"] = float((res["quadrant"] != "ns").mean())
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# --------------------------------------------------------------------------
+# Contributors
+# --------------------------------------------------------------------------
+
+def contributor_profile(campus_ids) -> pd.DataFrame:
+    """Per-contributor image counts, long format, one row per contributor."""
+    out = []
+    for cid in campus_ids:
+        g = points.load_points(cid, "mapillary")
+        if g.empty or "creator_id" not in g.columns:
+            continue
+        vc = (g.groupby(["creator_id", "creator_username"])
+              .size().sort_values(ascending=False).reset_index(name="n_images"))
+        seqs = g.groupby("creator_id")["sequence_id"].nunique()
+        vc["n_sequences"] = vc["creator_id"].map(seqs).fillna(0).astype(int)
+        vc["campus_id"] = cid
+        vc["rank"] = np.arange(1, len(vc) + 1)
+        vc["share"] = vc["n_images"] / vc["n_images"].sum()
+        vc["cum_share"] = vc["share"].cumsum()
+        out.append(vc)
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
+
+
+def contributor_summary(campus_ids) -> pd.DataFrame:
+    """Contributor count and concentration per campus.
+
+    ``gini`` is inequality of images across contributors: 0 is every
+    contributor mapping equally, near 1 is one person mapping the campus. This
+    matters for interpretation — a campus mapped by one student is a different
+    phenomenon from one mapped by twenty, even at identical coverage.
+    """
+    prof = contributor_profile(campus_ids)
+    if prof.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for cid, g in prof.groupby("campus_id"):
+        v = np.sort(g["n_images"].to_numpy(float))
+        n = len(v)
+        gini = ((2 * np.arange(1, n + 1) - n - 1) * v).sum() / (n * v.sum()) \
+            if n and v.sum() else np.nan
+        rows.append({
+            "campus_id": cid,
+            "n_contributors": n,
+            "n_images": int(v.sum()),
+            "top1_share": g["share"].iloc[0] if len(g) else np.nan,
+            "top3_share": g["share"].head(3).sum(),
+            "median_images": float(np.median(v)),
+            "gini": gini,
+            # Contributors accounting for the first 90% of images: a compact
+            # measure of how many people actually carry the coverage.
+            "n_for_90pct": int((g["cum_share"] < 0.9).sum() + 1),
+        })
+    return pd.DataFrame(rows)
+
+
+# --------------------------------------------------------------------------
 # 7. MAUP sensitivity
 # --------------------------------------------------------------------------
 
@@ -467,6 +681,8 @@ def write_tables(campus_ids, outdir=None) -> dict:
         "temporal_signature": temporal_signature(campus_ids),
         "programme": programme_table(campus_ids),
         "descriptives": descriptives(campus_ids),
+        "contributors": contributor_summary(campus_ids),
+        "contributor_profile": contributor_profile(campus_ids),
     }
     out = {}
     for name, df in built.items():

@@ -108,9 +108,80 @@ REGISTRY: dict[str, tuple[str, str, str, str, str]] = {
             "Medan", "North Sumatra", "Sumatra"),
 }
 
+# --------------------------------------------------------------------------
+# Institutional colours
+# --------------------------------------------------------------------------
+
+#: Sites of the same institution share a colour: ITB Ganesha and Jatinangor,
+#: UNAIR Campus B and C, UNESA Campus 1 and 2 are one university each, and
+#: colouring them apart would imply otherwise.
+INSTITUTION = {
+    "itb_ganesha": "itb", "itb_jatinangor": "itb",
+    "unair_b": "unair", "unair_c": "unair",
+    "unesa_1": "unesa", "unesa_2": "unesa",
+    "ui_main": "ui", "uii_kaliurang": "uii",
+    "unsri_indralaya": "unsri", "unud_jimbaran": "unud",
+    "telkom_uni": "telkom",
+}
+
+#: Approximate institutional colours, for linking a campus across figures.
+#: HAND-ENTERED AND UNVERIFIED — treat as a starting point and correct any you
+#: know to be wrong; nothing downstream depends on the exact value.
+#:
+#: Note that 40 institutional colours cannot all be visually distinct, and
+#: several universities share a similar blue or green. Colour here links a
+#: point to its panel; the labels carry identity. Do not ask a reader to
+#: identify a campus from colour alone.
+INSTITUTION_COLORS = {
+    "ipb": "#1F6F3D", "itb": "#005CA9", "itera": "#E4572E", "its": "#0E4C92",
+    "telkom": "#E30613", "ugm": "#C8A415", "ui": "#FFD100", "uii": "#003A70",
+    "um": "#1B6B4C", "umy": "#2E7D5B", "unair": "#003F87", "unand": "#1E7B45",
+    "unbraw": "#14487F", "undip": "#003366", "unej": "#4B8F29",
+    "unesa": "#1560BD", "unhas": "#C8102E", "unila": "#1F7A4D",
+    "unimed": "#0F7B3F", "unj": "#007A33", "unja": "#E36414",
+    "unlam": "#00539B", "unmul": "#F2A900", "unnes": "#1B8A5A",
+    "unp": "#1C4E80", "unpad": "#C99700", "unri": "#0B6E4F", "uns": "#1F4E9C",
+    "unsoed": "#2E6B8A", "unsrat": "#B22222", "unsri": "#F2C300",
+    "untad": "#1E824C", "untan": "#005B96", "unud": "#A31621",
+    "uny": "#2A6DB0", "upi": "#0B3C8C", "usu": "#007A3D",
+}
+
+_FALLBACK = "#8a8a8a"
+
+
+def institution(campus_id: str) -> str:
+    """Institution key for a campus site."""
+    return INSTITUTION.get(campus_id, campus_id)
+
+
+def color(campus_id: str) -> str:
+    """Institutional colour for a campus, shared across its sites."""
+    return INSTITUTION_COLORS.get(institution(campus_id), _FALLBACK)
+
+
+def colors(campus_ids) -> list[str]:
+    return [color(c) for c in campus_ids]
+
+
 # Ids whose official abbreviation differs from the slug enough to be worth a
 # second look when proofreading the registry.
 RENAMED = {"unbraw": "UB", "unlam": "ULM", "unud_jimbaran": "UDAYANA"}
+
+
+#: Canonical presentation order — the order REGISTRY is written in, which
+#: begins with IPB. Every figure and table uses it so a reader can carry a
+#: campus's position from one panel to the next without re-reading labels.
+#: Sorting by a metric would make each figure internally tidy but mutually
+#: incomparable, which is the more expensive mistake across a set this size.
+CANONICAL_ORDER = list(REGISTRY.keys())
+
+
+def ordered(campus_ids) -> list[str]:
+    """Campus ids in canonical order; anything unregistered goes last, sorted."""
+    rank = {c: i for i, c in enumerate(CANONICAL_ORDER)}
+    known = [c for c in campus_ids if c in rank]
+    rest = sorted(c for c in campus_ids if c not in rank)
+    return sorted(known, key=lambda c: rank[c]) + rest
 
 
 def display_name(campus_id: str) -> str:

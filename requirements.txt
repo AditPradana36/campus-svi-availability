@@ -16,3 +16,10 @@ streetlevel>=0.12
 
 # Lets the async fetchers run inside Colab/Jupyter
 nest-asyncio>=1.6
+
+# Figures
+matplotlib>=3.7
+
+# Satellite basemap for the study-area panels. Optional: without it those
+# panels fall back to a plain fill and nothing else is affected.
+contextily>=1.5
