@@ -31,8 +31,7 @@ import math
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
+import matplotlib.patheffects as pe
 
 from campus_svi import boundaries, registry
 from campus_svi.analysis import maps, paperstyle as ps
@@ -56,21 +55,82 @@ def _has_contextily():
 # Overview map
 # --------------------------------------------------------------------------
 
-def _label_slots(n: int, y0: float, y1: float):
-    """Evenly spaced vertical slots for stacked labels."""
-    if n == 1:
-        return np.array([(y0 + y1) / 2])
-    return np.linspace(y1, y0, n)
+#: Basemap providers, tried in order. CartoDB is deliberately absent: its
+#: tiles now return an "API KEY REQUIRED" watermark, and xyzservices still
+#: reports requires_token() as False, so the metadata cannot be trusted here.
+#: Esri and OpenStreetMap serve these layers without a key.
+PLAIN_PROVIDERS = ["Esri.WorldGrayCanvas", "Esri.WorldTopoMap",
+                   "OpenStreetMap.Mapnik"]
+IMAGERY_PROVIDERS = ["Esri.WorldImagery"]
+
+
+def _provider(path: str):
+    import xyzservices.providers as xp
+    obj = xp
+    for part in path.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _add_basemap(ax, crs, providers, zoom=None):
+    """Try each provider until one renders. Returns the name that worked."""
+    import contextily as cx
+
+    for name in providers:
+        try:
+            kw = {"zoom": zoom} if zoom is not None else {"zoom": "auto"}
+            cx.add_basemap(ax, crs=crs, source=_provider(name),
+                           attribution=False, **kw)
+            return name
+        except Exception:                                     # noqa: BLE001
+            continue
+    return None
+
+
+def _text_size_data(ax, text, fontsize):
+    """Approximate label width and height in data units.
+
+    Rendered extents need a draw pass, which is expensive inside a placement
+    loop. A character-count estimate is close enough to keep labels apart,
+    and erring slightly large is the safe direction.
+    """
+    fig = ax.figure
+    pos = ax.get_position()
+    w_pt = pos.width * fig.get_figwidth() * 72
+    h_pt = pos.height * fig.get_figheight() * 72
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    per_x = (x1 - x0) / max(w_pt, 1)
+    per_y = (y1 - y0) / max(h_pt, 1)
+    return (len(text) * fontsize * 0.52 * per_x,
+            fontsize * 1.18 * per_y, per_x, per_y)
+
+
+def _overlaps(a, b, pad_x=0.0, pad_y=0.0):
+    return not (a[2] + pad_x < b[0] or b[2] + pad_x < a[0] or
+                a[3] + pad_y < b[1] or b[3] + pad_y < a[1])
 
 
 def fig_overview(campus_ids, save="fig0_study_area", width=None,
-                 height: float = None, bounds=None, label_pad: float = 0.16,
-                 point_size: float = 20, basemap: bool = False,
-                 min_label_gap: float = 0.115):
-    """National overview: campus centroids with leader-line labels.
+                 height: float = 4.2, bounds=None, point_size: float = 20,
+                 basemap: bool = True, fontsize: float = 4.9,
+                 leader_min_pt: float = 7.0):
+    """National overview: campus centroids labelled in place.
 
-    ``label_pad`` is the share of the axis width reserved for labels on each
-    side. Raise it if names are clipped; lower it to give the map more room.
+    Labels sit **inside** the map, placed by a greedy search: for each campus
+    the candidate positions around its point are tried nearest-first, and the
+    first that collides with no already-placed label is taken. A leader line is
+    drawn only when the label ended up far enough away to need one, so the
+    uncrowded campuses in Sumatra and Sulawesi get a clean label against their
+    point while the Java cluster fans outward.
+
+    This is better than stacking labels in the margins, which guarantees no
+    overlap but spends half the figure width on a column of names and draws
+    forty long leader lines across the map.
+
+    The basemap is plain rather than satellite: texture at national extent
+    competes with forty coloured points and says nothing about where imagery
+    exists.
     """
     ps.apply()
     width = width or ps.FULL_W
@@ -83,63 +143,100 @@ def fig_overview(campus_ids, save="fig0_study_area", width=None,
     reg = reg.set_index("campus_id").loc[
         registry.ordered(reg["campus_id"])].reset_index()
 
-    # Height is driven by the label column, not the map: with 40 names split
-    # across two columns, the taller constraint is fitting ~20 lines legibly.
-    per_side = math.ceil(len(reg) / 2)
-    height = height or max(3.4, per_side * min_label_gap + 0.6)
     fig, ax = plt.subplots(figsize=(width, height))
-
-    # Draw the map in the middle, with margins reserved for label columns.
-    span = e - w
-    ax.set_xlim(w - span * label_pad, e + span * label_pad)
+    ax.set_xlim(w, e)
     ax.set_ylim(s, n)
-
-    if basemap and _has_contextily():
-        try:
-            import contextily as cx
-            cx.add_basemap(ax, crs="EPSG:4326",
-                           source=cx.providers.CartoDB.PositronNoLabels,
-                           attribution_size=4)
-        except Exception as exc:                              # noqa: BLE001
-            print(f"  ! basemap unavailable: {type(exc).__name__}")
-
-    # Split into two label columns by longitude *rank*, not by the midpoint
-    # of the map. Indonesian universities cluster heavily in Java, so a
-    # midpoint split puts nearly all 40 labels in one column and leaves the
-    # other empty. Ranking balances the columns whatever the distribution.
-    ordered_lon = reg.sort_values("centroid_lon")
-    half_n = math.ceil(len(ordered_lon) / 2)
-    left = ordered_lon.iloc[:half_n].sort_values("centroid_lat")
-    right = ordered_lon.iloc[half_n:].sort_values("centroid_lat")
-
-    x_left = w - span * label_pad * 0.92
-    x_right = e + span * label_pad * 0.92
-
-    for side, df, xlab, ha in (("l", left, x_left, "right"),
-                               ("r", right, x_right, "left")):
-        slots = _label_slots(len(df), s + (n - s) * 0.03, n - (n - s) * 0.03)
-        for (_, row), ys in zip(df.iterrows(), slots[::-1]):
-            colr = registry.color(row["campus_id"])
-            ax.plot([row["centroid_lon"], xlab], [row["centroid_lat"], ys],
-                    color=colr, lw=0.35, alpha=0.55, zorder=2,
-                    solid_capstyle="round")
-            ax.text(xlab + (-0.25 if ha == "right" else 0.25), ys,
-                    registry.display_name(row["campus_id"]),
-                    ha=ha, va="center", fontsize=4.8, color="#2b2b2b",
-                    zorder=4)
-
-    ax.scatter(reg["centroid_lon"], reg["centroid_lat"],
-               s=point_size, c=registry.colors(reg["campus_id"]),
-               edgecolor="white", linewidth=0.4, zorder=5)
-
     ax.set_aspect("equal")
     ax.set_axis_off()
-
-    # Latitude/longitude are meaningless as decoration here; a scale bar is
-    # not, so the reader can judge distance between sites.
-    _geographic_scale_bar(ax, w, e, s, n)
-
     fig.subplots_adjust(left=0.005, right=0.995, top=0.99, bottom=0.01)
+
+    used = None
+    if basemap and _has_contextily():
+        used = _add_basemap(ax, "EPSG:4326", PLAIN_PROVIDERS)
+        if used is None:
+            print("  ! no basemap provider reachable — drawing without one")
+
+    ax.set_xlim(w, e)
+    ax.set_ylim(s, n)
+
+    # Points first: labels are placed around them and must not cover them.
+    ax.scatter(reg["centroid_lon"], reg["centroid_lat"], s=point_size,
+               c=registry.colors(reg["campus_id"]), edgecolor="white",
+               linewidth=0.4, zorder=6)
+
+    _, _, per_x, per_y = _text_size_data(ax, "M", fontsize)
+    placed: list[tuple] = []
+    marker_r = (point_size ** 0.5) * 0.6
+
+    # Candidate rings, nearest first: a label close to its point needs no
+    # leader line at all.
+    radii = [7, 12, 18, 26, 36, 48, 62]
+    angles = np.deg2rad([0, 180, 45, -45, 135, -135, 90, -90])
+
+    # Densest areas first. A campus in the Java cluster has the fewest viable
+    # slots, so it should choose before an isolated one takes a nearby space.
+    pts = reg[["centroid_lon", "centroid_lat"]].to_numpy(float)
+    dens = []
+    for i, p in enumerate(pts):
+        d = np.hypot(pts[:, 0] - p[0], pts[:, 1] - p[1])
+        dens.append((np.sort(d)[1:6]).sum())
+    order = np.argsort(dens)
+
+    for idx in order:
+        row = reg.iloc[idx]
+        cid = row["campus_id"]
+        label = registry.display_name(cid)
+        lw, lh, _, _ = _text_size_data(ax, label, fontsize)
+        px, py = float(row["centroid_lon"]), float(row["centroid_lat"])
+
+        best = None
+        for r_pt in radii:
+            for a in angles:
+                dx = np.cos(a) * r_pt * per_x
+                dy = np.sin(a) * r_pt * per_y
+                cx_, cy_ = px + dx, py + dy
+                ha = "left" if dx >= 0 else "right"
+                x_lo = cx_ if ha == "left" else cx_ - lw
+                rect = (x_lo, cy_ - lh / 2, x_lo + lw, cy_ + lh / 2)
+                if not (w < rect[0] and rect[2] < e and
+                        s < rect[1] and rect[3] < n):
+                    continue
+                if any(_overlaps(rect, o, per_x * 1.2, per_y * 0.6)
+                       for o in placed):
+                    continue
+                # Do not sit on top of any campus point.
+                if np.any((pts[:, 0] > rect[0] - marker_r * per_x) &
+                          (pts[:, 0] < rect[2] + marker_r * per_x) &
+                          (pts[:, 1] > rect[1] - marker_r * per_y) &
+                          (pts[:, 1] < rect[3] + marker_r * per_y)):
+                    continue
+                best = (cx_, cy_, ha, rect, r_pt)
+                break
+            if best:
+                break
+
+        if best is None:      # nowhere clean: place at the far ring anyway
+            dx = radii[-1] * per_x
+            cx_, cy_, ha = px + dx, py, "left"
+            best = (cx_, cy_, ha, (cx_, cy_ - lh / 2, cx_ + lw, cy_ + lh / 2),
+                    radii[-1])
+
+        cx_, cy_, ha, rect, r_pt = best
+        placed.append(rect)
+        colr = registry.color(cid)
+        if r_pt >= leader_min_pt:
+            ax.plot([px, cx_ - (0.4 * per_x if ha == "left" else -0.4 * per_x)],
+                    [py, cy_], color=colr, lw=0.35, alpha=0.7, zorder=4,
+                    solid_capstyle="round")
+        ax.text(cx_, cy_, label, ha=ha, va="center", fontsize=fontsize,
+                color="#1f1f1f", zorder=7,
+                path_effects=[pe.withStroke(linewidth=1.1, foreground="white")])
+
+    _geographic_scale_bar(ax, w, e, s, n)
+    if used:
+        fig.text(0.995, 0.008, used.replace(".", " "), ha="right", va="bottom",
+                 fontsize=4.4, color="#7a7a7a", style="italic")
+
     if save:
         maps.save_figure(fig, save)
     return fig, ax
@@ -201,9 +298,10 @@ def fig_campus_panels(campus_ids, save="fig0b_campus_boundaries", ncols=8,
     nrows = math.ceil(n / ncols)
     panel = width / ncols
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(width, nrows * panel * 1.24 + 0.5))
+                             figsize=(width, nrows * panel * 1.14 + 0.5))
     axes = np.atleast_1d(axes).ravel()
     imagery_ok = False          # only claim imagery in the caption if it loaded
+    warned = False
 
     for k, cid in enumerate(ids):
         ax = axes[k]
@@ -226,18 +324,14 @@ def fig_campus_panels(campus_ids, save="fig0b_campus_boundaries", ncols=8,
         ax.set_aspect("equal")
 
         if use_imagery:
-            try:
-                import contextily as cx
-                # contextily wants "auto" or an int; None is rejected.
-                kw = {"zoom": zoom} if zoom is not None else {"zoom": "auto"}
-                cx.add_basemap(ax, crs=WEB_MERCATOR,
-                               source=cx.providers.Esri.WorldImagery,
-                               attribution=False, **kw)
+            got = _add_basemap(ax, WEB_MERCATOR, IMAGERY_PROVIDERS, zoom=zoom)
+            if got:
                 imagery_ok = True
-            except Exception as exc:                          # noqa: BLE001
+            else:
                 ax.set_facecolor("#e9e9e9")
-                if k == 0:
-                    print(f"  ! imagery fetch failed: {type(exc).__name__}: {exc}")
+                if not warned:
+                    print("  ! imagery unreachable — panels drawn plain")
+                    warned = True
         else:
             ax.set_facecolor("#ededed")
 
@@ -263,7 +357,7 @@ def fig_campus_panels(campus_ids, save="fig0b_campus_boundaries", ncols=8,
         ax.set_axis_off()
 
     fig.subplots_adjust(left=0.005, right=0.995, top=0.972, bottom=0.03,
-                        wspace=0.06, hspace=0.30)
+                        wspace=0.06, hspace=0.16)
     # Report what actually rendered, not what was requested: a caption
     # crediting imagery that failed to load would be simply false.
     note = ("Esri World Imagery" if imagery_ok else "imagery unavailable")
