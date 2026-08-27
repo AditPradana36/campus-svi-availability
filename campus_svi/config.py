@@ -95,8 +95,16 @@ def require_mapillary_token() -> str:
 # Grid
 # --------------------------------------------------------------------------
 
-CELL_SIZE_M = 100          # analysis cell edge, metres, in local UTM
+# Analysis cell edge, metres, in local UTM. At 20 m a square-kilometre campus
+# carries ~2,500 cells, so map layers are rasterised at draw time (see
+# analysis/maps.py). Coverage ratios are lower at 20 m than at 100 m by
+# construction — a smaller cell is harder to intersect — so results are not
+# comparable with anything computed at a different cell size.
+CELL_SIZE_M = 20
 MIN_CELL_OVERLAP = 0.05    # drop boundary slivers from coverage denominators
+
+# Cell sizes for the MAUP sensitivity check, spanning the working resolution.
+MAUP_SIZES = (20, 50, 100)
 
 # --------------------------------------------------------------------------
 # Mapillary — adaptive subdivision over seed boxes

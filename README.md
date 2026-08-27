@@ -2,7 +2,9 @@
 
 Street-view imagery **availability** data for Indonesian university campuses: crowdsourced (Mapillary) and proprietary (Google) coverage, collected on a regular grid.
 
-**Metadata only.** No imagery is downloaded. **Acquisition only** — no analysis lives here.
+**Metadata only.** No imagery is downloaded.
+
+Two stages: **acquisition** (`campus_svi/`) collects the data, **analysis** (`campus_svi/analysis/`) turns it into tables and publication figures. The analysis layer fetches nothing — it reads the acquisition outputs, so you can re-analyse without re-collecting.
 
 ---
 
@@ -23,7 +25,7 @@ Analysis reads these. Nothing in this repo computes coverage ratios, decay curve
 
 ## Quick start
 
-**Colab** — open `notebooks/01_acquisition.ipynb`, which mounts Drive, runs one campus, then the batch.
+**Colab** — `notebooks/01_acquisition.ipynb` collects the data; `notebooks/02_analysis.ipynb` produces the tables and figures. They are deliberately separate: acquisition is a long network-bound run you do once, analysis is fast and iterative.
 
 **Command line:**
 
@@ -35,6 +37,11 @@ python scripts/run.py --list              # what's in boundaries/
 python scripts/run.py --campus ui_main    # one campus, all stages
 python scripts/run.py --all               # every campus
 python scripts/status.py                  # where everything stands
+
+python scripts/make_registry.py           # campus registry CSV
+python scripts/analyse.py                 # all tables and figures
+python scripts/analyse.py --tables-only
+python scripts/analyse.py --ncols 5 --skip-maup
 ```
 
 Every stage is checkpointed. Re-running resumes; it never restarts.
@@ -100,6 +107,79 @@ Cells are assigned by **spatial join**, never by whichever fetch unit returned t
 
 ---
 
+## Campus registry
+
+`data/reference/campus_registry.csv`, built by `scripts/make_registry.py`.
+
+| Column | Source |
+|---|---|
+| `campus_id` | boundary filename stem — the key used throughout |
+| `display_name`, `full_name` | lookup in `campus_svi/registry.py` |
+| `city`, `province`, `island` | lookup — **hand-entered** |
+| `centroid_lat`, `centroid_lon` | computed in the campus's UTM zone, returned as WGS84 |
+| `area_km2`, `perimeter_km`, `utm_epsg` | computed from the boundary |
+| `n_cells`, `cell_size_m` | from the cell table |
+| `verified` | always written `False` — set it True once you have checked the row |
+
+`campus_id` is a slug: stable, lowercase, safe in paths, and not what should appear on a figure. `display_name` is. Multi-site universities keep the institution's own designation — UNESA Campus 1 and 2, UNAIR Campus B and C — rather than place names, since those are the official labels.
+
+Three abbreviations differ from their slug and are worth proofreading: `unbraw` is **UB**, `unlam` is **ULM**, `unud_jimbaran` is **UDAYANA**.
+
+---
+
+## Analysis
+
+`campus_svi/analysis/` reads `data/cells/` and `data/points/` and writes to `data/analysis/`.
+
+| Module | Role |
+|---|---|
+| `registry.py` | Display names, city/province, centroid — builds `campus_registry.csv` |
+| `metrics.py` | Numbers only — every figure value is also written as a CSV |
+| `maps.py` | Small-multiple map engine |
+| `figures.py` | The six core figures plus robustness panels |
+| `style.py` | Colour contract shared across every figure |
+| `paperstyle.py` | House style: final-size authoring, ~6pt type, trimmed spines, no grid |
+
+### Figures
+
+| File | Analysis |
+|---|---|
+| `fig1_coverage` | Coverage ratio per source per campus |
+| `fig2_agreement_maps` | Cell-level source agreement, small multiples |
+| `fig2b_agreement_composition` | Agreement class composition per campus |
+| `fig3_decay` | Coverage against depth into campus |
+| `fig3b_openness` | Decay slope per campus — the openness index |
+| `fig4_temporal_depth` | Distinct Google capture years per cell |
+| `fig4b_depth_diff` | Mapillary minus Google capture years |
+| `fig5_temporal` | Annual volume, monthly series, burstiness |
+| `fig6_programme` | Google capture programme composition |
+| `figS1_maup` | Coverage at 20/50/100 m cells |
+| `figS2_morans` | Moran's I per campus |
+
+### Maps: per-panel zoom, per-panel scale bar
+
+Each panel is **fitted to its own campus boundary**, so every campus fills its frame regardless of size. That keeps internal structure legible on a 0.2 km² campus and a 4 km² one alike, which is what matters when the subject is where coverage falls inside a boundary.
+
+Scale therefore differs between panels, so **each panel carries its own scale bar**, placed below the frame — panels are filled edge to edge, so there is no reliable empty corner inside, and an interior bar collides with the data on some campus every time. A single shared bar would be false here.
+
+What panel size no longer encodes is campus extent: a small campus and a large one look alike. The bars carry that, and `show_area=True` prints each campus's area beside its name.
+
+Panels carry no axes, ticks, or per-panel legends — one colorbar and one legend serve the whole figure. At 40 faces, anything repeated 40 times is noise.
+
+Forty campuses span several UTM zones, so each is projected to its own local UTM and translated to put its centroid at the origin; panels are drawn in metres from centre, with no common CRS to distort anything. At 20 m a campus can carry thousands of cells, so the cell layer is rasterised per panel while boundaries, text and bars stay vector — identical in print, but a PDF that opens.
+
+### Two things the analysis needs that acquisition does not store
+
+**Distance to boundary** (`metrics.add_boundary_distance`) is computed at analysis time from the boundary polygon. Normalised by each campus's own maximum, so 0 is the perimeter and 1 the deepest interior point, which makes campuses of different size comparable.
+
+**Moran's I** (`metrics.morans_i`) is computed on the lattice directly from row/column adjacency, with a permutation test. No spatial-weights library, and no ambiguity about what counts as adjacent.
+
+### Restyling
+
+Colours live in `analysis/style.py`, the house style in `analysis/paperstyle.py`. Change them there and every figure follows. Do not override a colour in a single figure — the set stops reading as one document.
+
+---
+
 ## Output schema
 
 **Points — `mapillary` layer:** `image_id`, `lat`/`lon`, `computed_lat`/`computed_lon`, `captured_at` (Unix ms), `captured_date`, `year`, `year_month`, `compass_angle`, `computed_compass_angle`, `altitude`, `camera_type`, `is_pano`, `sequence_id`, `creator_id`, `creator_username`, `organization_id`.
@@ -121,7 +201,7 @@ All in `campus_svi/config.py`.
 
 | Setting | Default | Effect |
 |---|---|---|
-| `CELL_SIZE_M` | 10 | Analysis resolution. Does not change Google request count (tile-based) |
+| `CELL_SIZE_M` | 20 | Analysis resolution. Does not change Google request count (tile-based) |
 | `MLY_SEED_SIZE_M` | 500 | Atomic Mapillary fetch unit; also the resume granularity |
 | `MLY_PAGE_LIMIT` | 500 | Starting page size; ratchets down on refusal |
 | `MLY_MAX_DEPTH` | 10 | Quadtree ceiling inside a seed box |

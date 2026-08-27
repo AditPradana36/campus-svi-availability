@@ -100,6 +100,31 @@ def _agg_google(x: gpd.GeoDataFrame) -> pd.DataFrame:
     return out.reset_index()
 
 
+# Every cell table carries these columns whether or not the campus has data
+# for them. A campus with no Google coverage would otherwise produce a table
+# missing the ggl_* columns entirely, and anything consuming several campuses
+# would break on the first one that differs.
+SCHEMA_INT = ["mly_count", "mly_n_sequences", "mly_n_creators", "mly_n_orgs",
+              "mly_n_years", "mly_n_months",
+              "ggl_count", "ggl_n_positions", "ggl_n_historical",
+              "ggl_n_years", "ggl_n_captures"]
+SCHEMA_FLOAT = ["mly_pano_ratio", "mly_year_min", "mly_year_max",
+                "ggl_year_min", "ggl_year_max", "ggl_third_party_ratio",
+                "ggl_launch_ratio", "ggl_scout_ratio", "ggl_innerspace_ratio",
+                "ggl_mean_elevation", "depth_diff"]
+
+
+def _complete_schema(wide):
+    for c in SCHEMA_INT:
+        if c not in wide.columns:
+            wide[c] = 0
+        wide[c] = wide[c].fillna(0).astype(int)
+    for c in SCHEMA_FLOAT:
+        if c not in wide.columns:
+            wide[c] = np.nan
+    return wide
+
+
 def build_cells(campus_id: str, verbose: bool = True) -> Path:
     """Join both sources onto the grid and write ``{campus}_cells.gpkg``."""
     config.ensure_dirs()
@@ -134,6 +159,11 @@ def build_cells(campus_id: str, verbose: bool = True) -> Path:
     if {"mly_n_years", "ggl_n_years"}.issubset(wide.columns):
         wide["depth_diff"] = wide["mly_n_years"] - wide["ggl_n_years"]
         wide.loc[wide["agreement"] != "both", "depth_diff"] = np.nan
+
+    wide = _complete_schema(wide)
+    # Carried so downstream tables and figures never have to re-derive it.
+    from campus_svi import registry
+    wide["display_name"] = registry.display_name(campus_id)
 
     out = cells_path(campus_id)
     wide.to_file(out, layer="cells", driver="GPKG")
