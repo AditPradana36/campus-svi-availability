@@ -458,46 +458,78 @@ def fig_autocorrelation(campus_ids, save="figS2_morans", permutations=499):
 # 7. Image and panorama counts
 # --------------------------------------------------------------------------
 
-def fig_count_bars(campus_ids, source: str = "mapillary", save=None,
-                   width=None, height=None):
-    """Total records per campus — the raw totals behind the count maps.
+def fig_count_bars(campus_ids, save="fig7c_totals", width=None, height=None):
+    """Total records per campus: Google left, Mapillary right.
 
-    The maps show where records sit; they cannot show how many a campus has in
-    total, because a log ramp compresses exactly the differences that matter
-    between campuses. This is the plain answer to "how much imagery does this
-    campus have", on a linear axis, sorted by value.
+    A back-to-back bar pair sharing one axis of campus names. The two sides
+    have **independent scales**, printed on their own axes, because the sources
+    differ in volume by an order of magnitude — forcing a common scale would
+    render one side as a row of stubs and hide its internal variation.
+
+    That independence is the trade-off to state plainly: bar *lengths* are not
+    comparable across the centre line. What the figure supports is comparing
+    campuses within a source, and seeing at a glance whether a campus is
+    well-covered by one source and not the other.
+
+    Canonical order, so rows line up with every other figure in the set.
     """
     ps.apply()
     ids = registry.ordered(campus_ids)
-    cov = metrics.coverage_table(ids)
-    col = "mly_images" if source == "mapillary" else "ggl_panoramas"
-    name = "Mapillary images" if source == "mapillary" else "Google panoramas"
-    d = cov.sort_values(col)
+    cov = metrics.coverage_table(ids).set_index("campus_id").loc[ids].reset_index()
 
-    n = len(d)
-    width = width or ps.COL_W * 1.25
-    height = height or max(3.2, 0.19 * n + 1.0)
-    fig, ax = plt.subplots(figsize=(width, height))
+    n = len(cov)
+    width = width or ps.FULL_W
+    height = height or max(3.4, 0.185 * n + 1.0)
+    # Wide gutter: the campus names live between the two panels, so the gap
+    # has to fit the longest of them.
+    fig, axes = plt.subplots(1, 2, figsize=(width, height), sharey=True,
+                             gridspec_kw={"wspace": 0.34})
     y = np.arange(n)
-    ax.barh(y, d[col], height=0.74, color=registry.colors(d["campus_id"]))
-    ax.set_yticks(y)
-    ax.set_yticklabels(registry.display_names(d["campus_id"]), fontsize=6.0)
-    ax.set_xlabel(f"Total {name}")
-    ax.set_ylim(-0.7, n - 0.3)
+    cols = registry.colors(cov["campus_id"])
 
-    # Value at the end of each bar: with a long-tailed distribution the short
-    # bars are otherwise unreadable, and the totals are the point here.
-    for yy, v in zip(y, d[col]):
-        ax.text(v, yy, f" {int(v):,}", va="center", ha="left", fontsize=4.8,
-                color="#6f6f6f")
-    ax.set_xlim(0, d[col].max() * 1.16)
-    ps.finish(ax)
-    ax.spines["left"].set_visible(False)
-    ax.tick_params(axis="y", length=0)
-    fig.tight_layout()
-    stem = save or f"fig7c_{'mly' if source == 'mapillary' else 'ggl'}_totals"
-    maps.save_figure(fig, stem)
-    return fig, ax
+    # -- left: Google, growing leftwards ----------------------------------
+    axl = axes[0]
+    axl.barh(y, cov["ggl_panoramas"], height=0.74, color=cols)
+    axl.invert_xaxis()
+    axl.set_xlabel("Google panoramas")
+    for yy, v in zip(y, cov["ggl_panoramas"]):
+        axl.text(v, yy, f"{int(v):,} ", va="center", ha="right", fontsize=4.6,
+                 color="#6f6f6f")
+    axl.set_xlim(cov["ggl_panoramas"].max() * 1.20, 0)
+
+    # -- right: Mapillary, growing rightwards ------------------------------
+    axr = axes[1]
+    axr.barh(y, cov["mly_images"], height=0.74, color=cols)
+    axr.set_xlabel("Mapillary images")
+    for yy, v in zip(y, cov["mly_images"]):
+        axr.text(v, yy, f" {int(v):,}", va="center", ha="left", fontsize=4.6,
+                 color="#6f6f6f")
+    axr.set_xlim(0, cov["mly_images"].max() * 1.20)
+
+    # Campus names appear once, in the gutter: the left panel's tick labels
+    # are moved to its inner edge, so they never sit over either set of bars.
+    axl.set_yticks(y)
+    axl.yaxis.set_ticks_position("right")
+    axl.set_yticklabels(registry.display_names(cov["campus_id"]), fontsize=5.4)
+    axl.tick_params(axis="y", pad=3)
+    # Do NOT blank the right axis's labels: sharey means both axes use one
+    # formatter, so clearing there clears the gutter labels too. Matplotlib
+    # already hides duplicates on a shared axis.
+
+    for ax in (axl, axr):
+        ax.set_ylim(-0.7, n - 0.3)
+        # Canonical order reads top-down, so IPB is the first row rather than
+        # the last — barh would otherwise start numbering from the bottom.
+        ax.invert_yaxis()
+        ps.finish(ax)
+        ax.spines["left"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.tick_params(axis="y", length=0)
+
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.985, bottom=0.075)
+    if save:
+        maps.save_figure(fig, save)
+    return fig, axes
 
 
 def fig_count_maps(campus_ids, source: str = "mapillary", ncols=8,
@@ -656,22 +688,27 @@ def fig_moran_quadrants(campus_ids, source: str = "mapillary", ncols=8,
 # --------------------------------------------------------------------------
 
 def fig_contributors(campus_ids, width=None, save="fig10_contributors",
-                     log: bool = True, jitter: float = 0.0, height: float = 5.2):
-    """Who mapped each campus: how many people, and how much each did.
+                     log: bool = True, jitter: float = 0.0,
+                     height: float = 6.6, dot_size: float = 16,
+                     dot_edge: float = 0.35, dot_edge_color: str = "white",
+                     dot_alpha: float = 0.9):
+    """Who mapped each campus, in three panels on one campus axis.
 
-    Two stacked panels on a shared campus axis.
+    (a) how many contributors. (b) one dot per contributor at the number of
+    images they uploaded. (c) how unequally those images are distributed.
 
-    (a) counts contributors per campus. (b) places one dot per contributor at
-    the number of images they uploaded, so a campus with three contributors
-    shows three dots at their three different heights.
-
-    The pairing is the point. Panel (a) alone would say a campus is
+    The three answer questions the others cannot. (a) alone would call a campus
     well-contributed; (b) shows whether that is twenty people sharing the work
-    or one person carrying it while nineteen added a handful each. Two campuses
-    with identical coverage can be entirely different phenomena underneath.
+    or one carrying it; (c) reduces (b) to a single comparable number.
 
-    Log y on (b): the top contributor routinely holds two orders of magnitude
-    more images than the median one.
+    (c) stays in canonical order rather than sorted by value, because it shares
+    the axis with the panels above it — a sorted third panel would break the
+    column alignment that makes the figure readable. The ranked view of the
+    same quantity is in the summary table.
+
+    Dot styling is exposed because the right size depends on how many
+    contributors a campus has: ``dot_size`` and ``dot_edge`` are worth tuning
+    once you see your own data.
     """
     ps.apply()
     ids = registry.ordered(campus_ids)
@@ -681,14 +718,11 @@ def fig_contributors(campus_ids, width=None, save="fig10_contributors",
         return None
     summ = metrics.contributor_summary(ids).set_index("campus_id")
 
-    # Wide and short: 40 categories need horizontal room, and the paired
-    # panels only work sharing one x axis.
     # Wider than the text block: 40 categories with rotated labels need the
-    # room, and this figure is meant to be read across, not squeezed to column
-    # width. Crop or scale at layout time.
+    # room. Crop or scale at layout time.
     width = width or ps.FULL_W * 1.55
-    fig, axes = plt.subplots(2, 1, figsize=(width, height), sharex=True,
-                             gridspec_kw={"height_ratios": [1.0, 1.4]})
+    fig, axes = plt.subplots(3, 1, figsize=(width, height), sharex=True,
+                             gridspec_kw={"height_ratios": [1.0, 1.5, 0.9]})
     x = np.arange(len(ids))
     cols = registry.colors(ids)
 
@@ -702,7 +736,7 @@ def fig_contributors(campus_ids, width=None, save="fig10_contributors",
     # Contributors are people: integer ticks, not 15.0.
     ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True, nbins=5))
     ps.finish(ax)
-    ps.panel_letter(fig, ax, "a", dx=-0.05, dy=1.04)
+    ps.panel_letter(fig, ax, "a", dx=-0.045, dy=1.05)
 
     # -- (b) how much each contributed ------------------------------------
     ax2 = axes[1]
@@ -711,13 +745,13 @@ def fig_contributors(campus_ids, width=None, save="fig10_contributors",
         g = prof[prof["campus_id"] == cid]
         if g.empty:
             continue
-        # Dots sit on the campus tick by default (jitter = 0), so each campus
-        # reads as one clean vertical series and heights compare across
-        # campuses without horizontal spread confusing the eye.
+        # Dots sit on the campus tick by default, so each campus reads as one
+        # clean vertical series and heights compare straight across.
         xs = (np.full(len(g), float(i)) if not jitter
               else i + rng.uniform(-jitter, jitter, len(g)))
-        ax2.scatter(xs, g["n_images"], s=5.5, color=registry.color(cid),
-                    alpha=0.75, edgecolor="none", zorder=3)
+        ax2.scatter(xs, g["n_images"], s=dot_size, color=registry.color(cid),
+                    alpha=dot_alpha, edgecolor=dot_edge_color,
+                    linewidth=dot_edge, zorder=3)
 
     if log:
         ax2.set_yscale("log")
@@ -726,57 +760,29 @@ def fig_contributors(campus_ids, width=None, save="fig10_contributors",
         ax2.yaxis.set_major_formatter(
             mticker.FuncFormatter(lambda v, _: f"{int(v):d}" if v >= 1 else ""))
     ax2.set_ylabel("Images per contributor")
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(registry.display_names(ids), fontsize=5.0)
-    ps.rotate_xlabels(ax2, 90)
     ps.finish(ax2)
-    ps.panel_letter(fig, ax2, "b", dx=-0.05, dy=1.03)
+    ps.panel_letter(fig, ax2, "b", dx=-0.045, dy=1.03)
+
+    # -- (c) how unequally ------------------------------------------------
+    ax3 = axes[2]
+    gini = [summ.loc[c, "gini"] if c in summ.index else np.nan for c in ids]
+    ax3.bar(x, gini, color=cols, width=0.74, linewidth=0)
+    ax3.set_ylabel("Gini")
+    ax3.set_ylim(0, 1)
+    ax3.set_yticks([0, 0.5, 1.0])
+    ax3.set_xticks(x)
+    ax3.set_xticklabels(registry.display_names(ids), fontsize=5.0)
+    ps.rotate_xlabels(ax3, 90)
+    ps.finish(ax3)
+    ps.panel_letter(fig, ax3, "c", dx=-0.045, dy=1.06)
+    ax3.text(0.995, 0.92, "0 = evenly shared \u00b7 1 = one person",
+             transform=ax3.transAxes, ha="right", va="top", fontsize=5.2,
+             color="#6f6f6f")
 
     fig.tight_layout()
     if save:
         maps.save_figure(fig, save)
     return fig, axes
-
-
-def fig_contributor_concentration(campus_ids, save="fig10b_concentration",
-                                  width=None, height=None):
-    """How concentrated each campus's contributions are.
-
-    Gini of images across contributors: 0 means every contributor mapped
-    equally, near 1 means one person mapped the campus. Sorted by value — like
-    the openness index, this is a ranking, and a ranking in canonical order is
-    not a ranking.
-
-    A campus at 0.8 has coverage resting on a single volunteer, which is a
-    different kind of data availability from the same coverage produced by
-    twenty people, and matters for whether that coverage is likely to persist.
-    """
-    ps.apply()
-    df = metrics.contributor_summary(registry.ordered(campus_ids))
-    if df.empty:
-        return None
-    d = df.dropna(subset=["gini"]).sort_values("gini")
-
-    n = len(d)
-    width = width or ps.COL_W * 1.25
-    height = height or max(3.2, 0.19 * n + 1.0)
-    fig, ax = plt.subplots(figsize=(width, height))
-
-    y = np.arange(n)
-    ax.barh(y, d["gini"], height=0.74, color=registry.colors(d["campus_id"]))
-    ax.set_yticks(y)
-    ax.set_yticklabels(registry.display_names(d["campus_id"]), fontsize=6.0)
-    ax.set_xlabel("Gini of images across contributors\n"
-                  "(0 = evenly shared, 1 = one person)")
-    ax.set_xlim(0, 1)
-    ax.set_ylim(-0.7, n - 0.3)
-    ps.finish(ax)
-    ax.spines["left"].set_visible(False)
-    ax.tick_params(axis="y", length=0)
-    fig.tight_layout()
-    if save:
-        maps.save_figure(fig, save)
-    return fig, ax
 
 
 # --------------------------------------------------------------------------
@@ -800,8 +806,7 @@ def build_all(campus_ids, ncols=8, maup_sizes=None, show_area=False,
         ("fig7_mly_counts_raw", lambda: fig_count_maps(campus_ids, "mapillary", ncols, show_area=show_area, log=False)),
         ("fig7_ggl_counts_log", lambda: fig_count_maps(campus_ids, "google", ncols, show_area=show_area, log=True)),
         ("fig7_ggl_counts_raw", lambda: fig_count_maps(campus_ids, "google", ncols, show_area=show_area, log=False)),
-        ("fig7c_mly_totals", lambda: fig_count_bars(campus_ids, "mapillary")),
-        ("fig7c_ggl_totals", lambda: fig_count_bars(campus_ids, "google")),
+        ("fig7c_totals", lambda: fig_count_bars(campus_ids)),
         ("fig8_mly_annual", lambda: fig_annual_bars(campus_ids, "mapillary", ncols)),
         ("fig8_ggl_annual", lambda: fig_annual_bars(campus_ids, "google", ncols)),
         ("fig9_mly_local_moran", lambda: fig_local_moran(campus_ids, "mapillary", ncols, show_area=show_area)),
@@ -809,7 +814,6 @@ def build_all(campus_ids, ncols=8, maup_sizes=None, show_area=False,
         ("fig9b_mly_quadrants", lambda: fig_moran_quadrants(campus_ids, "mapillary", ncols, show_area=show_area)),
         ("fig9b_ggl_quadrants", lambda: fig_moran_quadrants(campus_ids, "google", ncols, show_area=show_area)),
         ("fig10_contributors", lambda: fig_contributors(campus_ids)),
-        ("fig10b_concentration", lambda: fig_contributor_concentration(campus_ids)),
     ]
     if not skip_maup:
         steps.append(("figS1_maup",

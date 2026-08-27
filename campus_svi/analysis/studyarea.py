@@ -112,9 +112,10 @@ def _overlaps(a, b, pad_x=0.0, pad_y=0.0):
 
 
 def fig_overview(campus_ids, save="fig0_study_area", width=None,
-                 height: float = 4.2, bounds=None, point_size: float = 20,
-                 basemap: bool = True, fontsize: float = 4.9,
-                 leader_min_pt: float = 7.0):
+                 height: float = None, bounds=None, point_size: float = 20,
+                 basemap: bool = True, fontsize: float = 5.2,
+                 leader_min_pt: float = 7.0, pad_frac: float = 0.10,
+                 label_pad_pt: float = 2.6, zoom_to_points: bool = True):
     """National overview: campus centroids labelled in place.
 
     Labels sit **inside** the map, placed by a greedy search: for each campus
@@ -134,7 +135,6 @@ def fig_overview(campus_ids, save="fig0_study_area", width=None,
     """
     ps.apply()
     width = width or ps.FULL_W
-    w, s, e, n = bounds or INDONESIA_BOUNDS
 
     reg = registry.build(campus_ids, include_cells=False)
     reg = reg.dropna(subset=["centroid_lat", "centroid_lon"])
@@ -143,6 +143,25 @@ def fig_overview(campus_ids, save="fig0_study_area", width=None,
     reg = reg.set_index("campus_id").loc[
         registry.ordered(reg["campus_id"])].reset_index()
 
+    if bounds is not None:
+        w, s, e, n = bounds
+    elif zoom_to_points:
+        # Frame the campuses, not the country. Most of Indonesia's east is
+        # empty of study sites, and showing it spends the figure's width on
+        # sea while the Java cluster stays illegible.
+        lon0, lon1 = reg["centroid_lon"].min(), reg["centroid_lon"].max()
+        lat0, lat1 = reg["centroid_lat"].min(), reg["centroid_lat"].max()
+        dx = max(lon1 - lon0, 1.0) * pad_frac
+        dy = max(lat1 - lat0, 1.0) * pad_frac
+        # Extra room on the sides for labels, which extend horizontally.
+        w, e = lon0 - dx * 2.2, lon1 + dx * 2.2
+        s, n = lat0 - dy * 1.4, lat1 + dy * 1.6
+    else:
+        w, s, e, n = INDONESIA_BOUNDS
+
+    # Height follows the framed aspect ratio, so the map is not stretched.
+    aspect = (n - s) / max(e - w, 1e-9)
+    height = height or float(np.clip(width * aspect * 1.05, 2.6, 8.0))
     fig, ax = plt.subplots(figsize=(width, height))
     ax.set_xlim(w, e)
     ax.set_ylim(s, n)
@@ -170,8 +189,12 @@ def fig_overview(campus_ids, save="fig0_study_area", width=None,
 
     # Candidate rings, nearest first: a label close to its point needs no
     # leader line at all.
-    radii = [7, 12, 18, 26, 36, 48, 62]
-    angles = np.deg2rad([0, 180, 45, -45, 135, -135, 90, -90])
+    # Horizontal placements first: a label to the left or right of its point
+    # reads more cleanly than one above or below, and leaves vertical room for
+    # the next campus in a dense cluster.
+    radii = [7, 11, 16, 22, 30, 40, 52, 66, 82]
+    angles = np.deg2rad([0, 180, 20, -20, 45, -45, 70, -70, 90, -90,
+                         135, -135, 160, -160])
 
     # Densest areas first. A campus in the Java cluster has the fewest viable
     # slots, so it should choose before an isolated one takes a nearby space.
@@ -201,7 +224,10 @@ def fig_overview(campus_ids, save="fig0_study_area", width=None,
                 if not (w < rect[0] and rect[2] < e and
                         s < rect[1] and rect[3] < n):
                     continue
-                if any(_overlaps(rect, o, per_x * 1.2, per_y * 0.6)
+                # label_pad_pt keeps a visible gap between neighbouring
+                # labels rather than letting them touch.
+                if any(_overlaps(rect, o, per_x * label_pad_pt,
+                                 per_y * label_pad_pt * 0.45)
                        for o in placed):
                     continue
                 # Do not sit on top of any campus point.

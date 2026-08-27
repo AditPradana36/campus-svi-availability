@@ -665,8 +665,36 @@ def descriptives(campus_ids) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def write_tables(campus_ids, outdir=None) -> dict:
-    """Compute every table and write it to CSV. Returns {name: path}."""
+def maup_table(campus_ids, sizes=None) -> pd.DataFrame:
+    """MAUP results in wide form, one row per campus, one column per size.
+
+    Coverage rises with cell size by construction — a bigger cell is easier to
+    intersect — so the absolute numbers are not the finding. What matters is
+    whether the campus *ranking* survives, which the correlation row at the
+    bottom of the notebook reports.
+    """
+    long = maup_profile(campus_ids, sizes=sizes)
+    if long.empty:
+        return long
+    from campus_svi import registry
+
+    wide = long.pivot_table(index="campus_id", columns="cell_size_m",
+                            values=["mly_coverage", "ggl_coverage",
+                                    "either_coverage", "n_cells"])
+    wide.columns = [f"{a}_{int(b)}m" for a, b in wide.columns]
+    wide = wide.reset_index()
+    wide.insert(1, "display_name", registry.display_names(wide["campus_id"]))
+    return wide
+
+
+def write_tables(campus_ids, outdir=None, include_maup: bool = False,
+                 maup_sizes=None) -> dict:
+    """Compute every table and write it to CSV. Returns {name: path}.
+
+    ``include_maup`` is off by default: it re-grids every campus at each cell
+    size, which is the slowest thing in the analysis layer. Turn it on when you
+    want the sensitivity table.
+    """
     from pathlib import Path
 
     outdir = Path(outdir) if outdir else config.DATA_DIR / "analysis" / "tables"
@@ -684,6 +712,9 @@ def write_tables(campus_ids, outdir=None) -> dict:
         "contributors": contributor_summary(campus_ids),
         "contributor_profile": contributor_profile(campus_ids),
     }
+    if include_maup:
+        built["maup_long"] = maup_profile(campus_ids, sizes=maup_sizes)
+        built["maup_wide"] = maup_table(campus_ids, sizes=maup_sizes)
     out = {}
     for name, df in built.items():
         if df is None or df.empty:
