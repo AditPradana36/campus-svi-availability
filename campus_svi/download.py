@@ -98,8 +98,11 @@ def download_mapillary(image_ids, campus_id: str = None,
     token = config.require_mapillary_token()
     d = outdir(campus_id)
     saved = []
+    ids = list(image_ids)
+    if verbose and len(ids) > 20:
+        print(f"  note: {len(ids)} images requested — this module is for samples.")
 
-    for iid in list(image_ids):
+    for iid in ids:
         try:
             meta = requests.get(
                 f"https://graph.mapillary.com/{iid}",
@@ -129,34 +132,61 @@ def download_mapillary(image_ids, campus_id: str = None,
 # --------------------------------------------------------------------------
 
 def download_google(pano_ids, campus_id: str = None, zoom: int = 3,
-                    verbose: bool = True) -> list[Path]:
+                    verbose: bool = True, concurrency: int = 4) -> list[Path]:
     """Fetch Google panoramas by pano id, via streetlevel.
 
-    ``zoom`` is the tile pyramid level, not a map zoom: 0 is a thumbnail and
-    5 is full resolution, which is a very large stitched image and slow. 3 is
-    a reasonable default for looking at a streetscape.
+    Uses streetlevel's **async** entry points. The synchronous
+    ``download_panorama`` calls ``asyncio.run()`` internally, which raises
+    inside a notebook because Colab and Jupyter already run an event loop —
+    so every download fails with "cannot be called from a running event loop"
+    even though the ids are perfectly good.
+
+    ``zoom`` is the tile pyramid level, not a map zoom: 0 is a thumbnail and 5
+    is full resolution, which is a large stitched image and slow. 3 suits a
+    visual check.
     """
+    import asyncio
+
+    from aiohttp import ClientSession, ClientTimeout
     from streetlevel import streetview
 
+    from campus_svi.mapillary import run_async      # notebook-safe loop helper
+
+    ids = list(pano_ids)
     d = outdir(campus_id)
-    saved = []
-    for pid in list(pano_ids):
-        try:
-            pano = streetview.find_panorama_by_id(pid)
-            if pano is None:
-                if verbose:
-                    print(f"  ! {pid}: not found")
-                continue
-            p = d / f"ggl_{pid}_z{zoom}.jpg"
-            streetview.download_panorama(pano, str(p), zoom=zoom)
-            saved.append(p)
-            if verbose:
-                size = p.stat().st_size / 1024 if p.exists() else 0
-                date = getattr(pano, "date", None)
-                print(f"  {p.name}  ({size:.0f} KB, {date})")
-        except Exception as exc:                              # noqa: BLE001
-            if verbose:
-                print(f"  ! {pid}: {type(exc).__name__}: {exc}")
+    saved: list[Path] = []
+
+    if verbose and len(ids) > 12:
+        print(f"  note: {len(ids)} panoramas requested. This module is for "
+              f"samples — each is a stitched image and zoom {zoom} is not small.")
+
+    async def _run():
+        sem = asyncio.Semaphore(concurrency)
+        async with ClientSession(timeout=ClientTimeout(total=300)) as session:
+            async def one(pid):
+                try:
+                    async with sem:
+                        pano = await streetview.find_panorama_by_id_async(
+                            pid, session)
+                        if pano is None:
+                            if verbose:
+                                print(f"  ! {pid}: not found")
+                            return
+                        p = d / f"ggl_{pid}_z{zoom}.jpg"
+                        await streetview.download_panorama_async(
+                            pano, str(p), session, zoom=zoom)
+                    if p.exists():
+                        saved.append(p)
+                        if verbose:
+                            print(f"  {p.name}  ({p.stat().st_size/1024:.0f} KB, "
+                                  f"{getattr(pano, 'date', None)})")
+                except Exception as exc:                      # noqa: BLE001
+                    if verbose:
+                        print(f"  ! {pid}: {type(exc).__name__}: {exc}")
+
+            await asyncio.gather(*[one(p) for p in ids])
+
+    run_async(_run())
     return saved
 
 
@@ -171,8 +201,11 @@ def sample_cell(campus_id: str, grid_id: str, source: str = "mapillary",
     if rows.empty:
         print(f"No {source} records in {grid_id}.")
         return []
+    # n=0 means "no cap", which on a dense cell can be dozens of downloads.
+    # Say what is about to happen rather than quietly starting.
     print(f"{registry.display_name(campus_id)} / {grid_id}: "
-          f"{len(rows)} {source} record(s)")
+          f"downloading {len(rows)} of {source} record(s)"
+          + ("  [n=0 means no limit]" if not n else ""))
     if source == "mapillary":
         return download_mapillary(rows["image_id"], campus_id, **kw)
     return download_google(rows["pano_id"], campus_id, **kw)

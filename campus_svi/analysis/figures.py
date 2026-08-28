@@ -482,8 +482,9 @@ def fig_count_bars(campus_ids, save="fig7c_totals", width=None, height=None):
     height = height or max(3.4, 0.185 * n + 1.0)
     # Wide gutter: the campus names live between the two panels, so the gap
     # has to fit the longest of them.
+    # Gutter wide enough for the longest campus name at 5.4pt, centred.
     fig, axes = plt.subplots(1, 2, figsize=(width, height), sharey=True,
-                             gridspec_kw={"wspace": 0.34})
+                             gridspec_kw={"wspace": 0.35})
     y = np.arange(n)
     cols = registry.colors(cov["campus_id"])
 
@@ -493,7 +494,7 @@ def fig_count_bars(campus_ids, save="fig7c_totals", width=None, height=None):
     axl.invert_xaxis()
     axl.set_xlabel("Google panoramas")
     for yy, v in zip(y, cov["ggl_panoramas"]):
-        axl.text(v, yy, f"{int(v):,} ", va="center", ha="right", fontsize=4.6,
+        axl.text(v, yy, f"{int(v):,} ", va="center", ha="right", fontsize=8,
                  color="#6f6f6f")
     axl.set_xlim(cov["ggl_panoramas"].max() * 1.20, 0)
 
@@ -502,19 +503,18 @@ def fig_count_bars(campus_ids, save="fig7c_totals", width=None, height=None):
     axr.barh(y, cov["mly_images"], height=0.74, color=cols)
     axr.set_xlabel("Mapillary images")
     for yy, v in zip(y, cov["mly_images"]):
-        axr.text(v, yy, f" {int(v):,}", va="center", ha="left", fontsize=4.6,
+        axr.text(v, yy, f" {int(v):,}", va="center", ha="left", fontsize=8,
                  color="#6f6f6f")
     axr.set_xlim(0, cov["mly_images"].max() * 1.20)
 
-    # Campus names appear once, in the gutter: the left panel's tick labels
-    # are moved to its inner edge, so they never sit over either set of bars.
+    # Campus names appear once, centred in the gutter between the panels.
+    # Tick labels cannot do this: a tick label anchors to its own axis edge,
+    # so long names drift across one panel while short ones sit far from the
+    # other. Figure text placed at the true midpoint stays centred whatever
+    # the name length.
     axl.set_yticks(y)
-    axl.yaxis.set_ticks_position("right")
-    axl.set_yticklabels(registry.display_names(cov["campus_id"]), fontsize=5.4)
-    axl.tick_params(axis="y", pad=3)
-    # Do NOT blank the right axis's labels: sharey means both axes use one
-    # formatter, so clearing there clears the gutter labels too. Matplotlib
-    # already hides duplicates on a shared axis.
+    axl.set_yticklabels([])
+    axr.set_yticks(y)
 
     for ax in (axl, axr):
         ax.set_ylim(-0.7, n - 0.3)
@@ -526,11 +526,20 @@ def fig_count_bars(campus_ids, save="fig7c_totals", width=None, height=None):
         ax.spines["right"].set_visible(False)
         ax.tick_params(axis="y", length=0)
 
+    # Names are drawn after the layout is final, so the gutter midpoint and
+    # the row positions are the ones actually used.
     fig.subplots_adjust(left=0.02, right=0.98, top=0.985, bottom=0.075)
+    pl, pr = axl.get_position(), axr.get_position()
+    x_mid = (pl.x1 + pr.x0) / 2
+    inv = fig.transFigure.inverted()
+    for yy, cid in zip(y, cov["campus_id"]):
+        y_fig = inv.transform(axl.transData.transform((0, yy)))[1]
+        fig.text(x_mid, y_fig, registry.display_name(cid), ha="center",
+                 va="center", fontsize=7, color="#2b2b2b")
+
     if save:
         maps.save_figure(fig, save)
     return fig, axes
-
 
 def fig_count_maps(campus_ids, source: str = "mapillary", ncols=8,
                    save=None, show_area=False, log: bool = True):
@@ -691,7 +700,7 @@ def fig_contributors(campus_ids, width=None, save="fig10_contributors",
                      log: bool = True, jitter: float = 0.0,
                      height: float = 6.6, dot_size: float = 16,
                      dot_edge: float = 0.35, dot_edge_color: str = "white",
-                     dot_alpha: float = 0.9):
+                     dot_alpha: float = 0.9, gini_fontsize: float = 7.5):
     """Who mapped each campus, in three panels on one campus axis.
 
     (a) how many contributors. (b) one dot per contributor at the number of
@@ -708,7 +717,9 @@ def fig_contributors(campus_ids, width=None, save="fig10_contributors",
 
     Dot styling is exposed because the right size depends on how many
     contributors a campus has: ``dot_size`` and ``dot_edge`` are worth tuning
-    once you see your own data.
+    once you see your own data. ``gini_fontsize`` governs panel (c)'s numbers,
+    which sit in a short panel and need to be set larger than the default to
+    stay readable.
     """
     ps.apply()
     ids = registry.ordered(campus_ids)
@@ -770,14 +781,18 @@ def fig_contributors(campus_ids, width=None, save="fig10_contributors",
     ax3.set_ylabel("Gini")
     ax3.set_ylim(0, 1)
     ax3.set_yticks([0, 0.5, 1.0])
+    # This panel is short, so its tick labels come out smaller than the ones
+    # above it unless set explicitly. Readable numbers matter more here than
+    # matching the other panels exactly: the Gini value is the point.
+    ax3.tick_params(axis="y", labelsize=gini_fontsize)
     ax3.set_xticks(x)
     ax3.set_xticklabels(registry.display_names(ids), fontsize=5.0)
     ps.rotate_xlabels(ax3, 90)
     ps.finish(ax3)
     ps.panel_letter(fig, ax3, "c", dx=-0.045, dy=1.06)
-    ax3.text(0.995, 0.92, "0 = evenly shared \u00b7 1 = one person",
-             transform=ax3.transAxes, ha="right", va="top", fontsize=5.2,
-             color="#6f6f6f")
+    ax3.text(0.995, 0.94, "0 = evenly shared \u00b7 1 = one person",
+             transform=ax3.transAxes, ha="right", va="top",
+             fontsize=gini_fontsize, color="#6f6f6f")
 
     fig.tight_layout()
     if save:
