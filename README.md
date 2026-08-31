@@ -15,7 +15,7 @@ Street-view imagery **availability** data for Indonesian university campuses: cr
 
 Two stages: **acquisition** (`campus_svi/`) collects the data, **analysis** (`campus_svi/analysis/`) turns it into tables and publication figures. The analysis layer fetches nothing — it reads the acquisition outputs, so you can re-analyse without re-collecting.
 
-📦 **[Dataset on Hugging Face](https://huggingface.co/datasets/TODO-add-dataset-path)** — the published `data/points/` and `data/cells/` deliverables described below.
+📦 **[Dataset on Hugging Face](https://huggingface.co/datasets/rpradana36/campus-svi-availability)** — the published `data/points/` and `data/cells/` deliverables described below.
 
 ---
 
