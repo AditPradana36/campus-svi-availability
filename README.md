@@ -1,10 +1,21 @@
-# Campus SVI — acquisition
+# Crowdsourced vs. proprietary street view coverage around Indonesian university campuses — Repository
+
+Mohammad Raditia Pradana<sup>a,b,∗</sup>, Jarot Mulyo Semedi<sup>a,b</sup>
+
+<sup>a</sup> SPARC (Spatial Modeling & Analysis Research Cluster), Universitas Indonesia, Depok, 16424, West Java, Indonesia
+<sup>b</sup> Department of Geography, Faculty of Mathematics and Natural Sciences, Universitas Indonesia, Depok, 16424, West Java, Indonesia
+
+> **Note:** This repository's codebase was developed with the assistance of [Claude Code](https://claude.com/claude-code), Anthropic's AI coding assistant.
+
+---
 
 Street-view imagery **availability** data for Indonesian university campuses: crowdsourced (Mapillary) and proprietary (Google) coverage, collected on a regular grid.
 
 **Metadata only.** No imagery is downloaded.
 
 Two stages: **acquisition** (`campus_svi/`) collects the data, **analysis** (`campus_svi/analysis/`) turns it into tables and publication figures. The analysis layer fetches nothing — it reads the acquisition outputs, so you can re-analyse without re-collecting.
+
+📦 **[Dataset on Hugging Face](https://huggingface.co/datasets/TODO-add-dataset-path)** — the published `data/points/` and `data/cells/` deliverables described below.
 
 ---
 
@@ -123,7 +134,55 @@ Cells are assigned by **spatial join**, never by whichever fetch unit returned t
 
 `campus_id` is a slug: stable, lowercase, safe in paths, and not what should appear on a figure. `display_name` is. Multi-site universities keep the institution's own designation — UNESA Campus 1 and 2, UNAIR Campus B and C — rather than place names, since those are the official labels.
 
-Three abbreviations differ from their slug and are worth proofreading: `unbraw` is **UB**, `unlam` is **ULM**, `unud_jimbaran` is **UDAYANA**.
+---
+
+## Campuses
+
+40 campuses across Java, Sumatra, Kalimantan, Sulawesi and Bali, defined in `campus_svi/registry.py` and boundary files under `boundaries/`.
+
+| Slug (`campus_id`) | Display name | Full name | City | Province | Island |
+|---|---|---|---|---|---|
+| `ipb` | IPB | IPB University (Dramaga) | Bogor | West Java | Java |
+| `itb_ganesha` | ITB Ganesha | Institut Teknologi Bandung — Ganesha | Bandung | West Java | Java |
+| `itb_jatinangor` | ITB Jatinangor | Institut Teknologi Bandung — Jatinangor | Sumedang | West Java | Java |
+| `itera` | ITERA | Institut Teknologi Sumatera | South Lampung | Lampung | Sumatra |
+| `its` | ITS | Institut Teknologi Sepuluh Nopember | Surabaya | East Java | Java |
+| `telkom_uni` | Telkom University | Telkom University | Bandung Regency | West Java | Java |
+| `ugm` | UGM | Universitas Gadjah Mada | Sleman | DI Yogyakarta | Java |
+| `ui_main` | UI | Universitas Indonesia — Depok | Depok | West Java | Java |
+| `uii_kaliurang` | UII | Universitas Islam Indonesia — Kaliurang | Sleman | DI Yogyakarta | Java |
+| `um` | UM | Universitas Negeri Malang | Malang | East Java | Java |
+| `umy` | UMY | Universitas Muhammadiyah Yogyakarta | Bantul | DI Yogyakarta | Java |
+| `unair_b` | UNAIR Campus B | Universitas Airlangga — Campus B | Surabaya | East Java | Java |
+| `unair_c` | UNAIR Campus C | Universitas Airlangga — Campus C | Surabaya | East Java | Java |
+| `unand` | UNAND | Universitas Andalas | Padang | West Sumatra | Sumatra |
+| `unbraw` | UB | Universitas Brawijaya | Malang | East Java | Java |
+| `undip` | UNDIP | Universitas Diponegoro — Tembalang | Semarang | Central Java | Java |
+| `unej` | UNEJ | Universitas Jember | Jember | East Java | Java |
+| `unesa_1` | UNESA Campus 1 | Universitas Negeri Surabaya — Campus 1 | Surabaya | East Java | Java |
+| `unesa_2` | UNESA Campus 2 | Universitas Negeri Surabaya — Campus 2 | Surabaya | East Java | Java |
+| `unhas` | UNHAS | Universitas Hasanuddin | Makassar | South Sulawesi | Sulawesi |
+| `unila` | UNILA | Universitas Lampung | Bandar Lampung | Lampung | Sumatra |
+| `unimed` | UNIMED | Universitas Negeri Medan | Deli Serdang | North Sumatra | Sumatra |
+| `unj` | UNJ | Universitas Negeri Jakarta | East Jakarta | DKI Jakarta | Java |
+| `unja` | UNJA | Universitas Jambi | Muaro Jambi | Jambi | Sumatra |
+| `unlam` | ULM | Universitas Lambung Mangkurat | Banjarbaru | South Kalimantan | Kalimantan |
+| `unmul` | UNMUL | Universitas Mulawarman | Samarinda | East Kalimantan | Kalimantan |
+| `unnes` | UNNES | Universitas Negeri Semarang | Semarang | Central Java | Java |
+| `unp` | UNP | Universitas Negeri Padang | Padang | West Sumatra | Sumatra |
+| `unpad` | UNPAD | Universitas Padjadjaran — Jatinangor | Sumedang | West Java | Java |
+| `unri` | UNRI | Universitas Riau | Pekanbaru | Riau | Sumatra |
+| `uns` | UNS | Universitas Sebelas Maret | Surakarta | Central Java | Java |
+| `unsoed` | UNSOED | Universitas Jenderal Soedirman | Banyumas | Central Java | Java |
+| `unsrat` | UNSRAT | Universitas Sam Ratulangi | Manado | North Sulawesi | Sulawesi |
+| `unsri_indralaya` | UNSRI Indralaya | Universitas Sriwijaya — Indralaya | Ogan Ilir | South Sumatra | Sumatra |
+| `untad` | UNTAD | Universitas Tadulako | Palu | Central Sulawesi | Sulawesi |
+| `untan` | UNTAN | Universitas Tanjungpura | Pontianak | West Kalimantan | Kalimantan |
+| `unud_jimbaran` | UDAYANA Jimbaran | Universitas Udayana — Jimbaran | Badung | Bali | Bali |
+| `uny` | UNY | Universitas Negeri Yogyakarta | Yogyakarta | DI Yogyakarta | Java |
+| `upi` | UPI | Universitas Pendidikan Indonesia | Bandung | West Java | Java |
+| `usu` | USU | Universitas Sumatera Utara | Medan | North Sumatra | Sumatra |
+
 
 ---
 
