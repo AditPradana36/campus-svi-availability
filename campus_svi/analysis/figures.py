@@ -18,7 +18,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
-from campus_svi import config, registry
+from campus_svi import config, points, registry
 from campus_svi.analysis import maps, metrics, paperstyle as ps
 from campus_svi.analysis import style as st
 
@@ -484,7 +484,7 @@ def fig_count_bars(campus_ids, save="fig7c_totals", width=None, height=None):
     # has to fit the longest of them.
     # Gutter wide enough for the longest campus name at 5.4pt, centred.
     fig, axes = plt.subplots(1, 2, figsize=(width, height), sharey=True,
-                             gridspec_kw={"wspace": 0.35})
+                             gridspec_kw={"wspace": 0.42})
     y = np.arange(n)
     cols = registry.colors(cov["campus_id"])
 
@@ -494,7 +494,7 @@ def fig_count_bars(campus_ids, save="fig7c_totals", width=None, height=None):
     axl.invert_xaxis()
     axl.set_xlabel("Google panoramas")
     for yy, v in zip(y, cov["ggl_panoramas"]):
-        axl.text(v, yy, f"{int(v):,} ", va="center", ha="right", fontsize=8,
+        axl.text(v, yy, f"{int(v):,} ", va="center", ha="right", fontsize=4.6,
                  color="#6f6f6f")
     axl.set_xlim(cov["ggl_panoramas"].max() * 1.20, 0)
 
@@ -503,7 +503,7 @@ def fig_count_bars(campus_ids, save="fig7c_totals", width=None, height=None):
     axr.barh(y, cov["mly_images"], height=0.74, color=cols)
     axr.set_xlabel("Mapillary images")
     for yy, v in zip(y, cov["mly_images"]):
-        axr.text(v, yy, f" {int(v):,}", va="center", ha="left", fontsize=8,
+        axr.text(v, yy, f" {int(v):,}", va="center", ha="left", fontsize=4.6,
                  color="#6f6f6f")
     axr.set_xlim(0, cov["mly_images"].max() * 1.20)
 
@@ -535,11 +535,12 @@ def fig_count_bars(campus_ids, save="fig7c_totals", width=None, height=None):
     for yy, cid in zip(y, cov["campus_id"]):
         y_fig = inv.transform(axl.transData.transform((0, yy)))[1]
         fig.text(x_mid, y_fig, registry.display_name(cid), ha="center",
-                 va="center", fontsize=7, color="#2b2b2b")
+                 va="center", fontsize=5.4, color="#2b2b2b")
 
     if save:
         maps.save_figure(fig, save)
     return fig, axes
+
 
 def fig_count_maps(campus_ids, source: str = "mapillary", ncols=8,
                    save=None, show_area=False, log: bool = True):
@@ -638,6 +639,165 @@ def fig_annual_bars(campus_ids, source: str = "mapillary", ncols=8,
 # --------------------------------------------------------------------------
 # 9. Local Moran's I — cluster maps and quadrants
 # --------------------------------------------------------------------------
+
+def fig_calendar_heatmap(campus_ids, source: str = "mapillary", ncols=8,
+                         width=None, save=None, cmap=None, log: bool = True,
+                         vmax=None, cell_size: float = 0.16):
+    """Year x month capture-activity heatmap, one panel per campus.
+
+    Each panel is a small grid with months on the x axis and years on the y
+    axis, cell color giving record count. This adds the within-year pattern
+    that fig8's annual bars cannot show: a campus with steady bars can still
+    turn out to be active only in a few months of each year, or only since a
+    particular year, and the calendar view makes that visible at a glance
+    across the full 40-campus set.
+
+    Year and month labels appear only on the outer edge of the grid, the same
+    convention as the other small-multiple figures in this module: the left
+    column carries year labels, the bottom row carries month labels. Every
+    panel still needs to be individually legible, so panels are drawn larger
+    and spacing between them is kept tight, rather than adding labels to
+    every panel and spreading them out to make room.
+
+    Color is log-scaled by default (``log10(count + 1)``), since capture
+    activity is as skewed month-to-month as it is cell-to-cell: a handful of
+    month/year cells often account for most of a campus's total volume, and a
+    linear scale would show a single bright cell against an otherwise flat
+    grid. Months and years with zero records are drawn at the ramp's own
+    floor color, not blanked out: for Mapillary in particular, an inactive
+    month is itself part of the pattern, not a missing observation, so it is
+    shown as a true zero rather than treated like a "no data" cell in the
+    spatial maps.
+    """
+    ps.apply()
+    cmap = cmap or st.CMAP
+    ids = registry.ordered(campus_ids)
+
+    layer = "mapillary" if source == "mapillary" else "google"
+    name = "Mapillary" if source == "mapillary" else "Google"
+
+    # Build one year x month count table per campus first, so the colour
+    # scale can be set from the full set before any panel is drawn.
+    tables, all_years = {}, set()
+    for cid in ids:
+        g = points.load_points(cid, layer)
+        if g.empty or "year" not in g.columns:
+            continue
+        yr = pd.to_numeric(g["year"], errors="coerce")
+        mo = (pd.to_numeric(g["month"], errors="coerce") if "month" in g.columns
+              else pd.to_datetime(g.get("year_month"), errors="coerce",
+                                  format="%Y-%m").dt.month)
+        d = pd.DataFrame({"year": yr, "month": mo}).dropna()
+        if d.empty:
+            continue
+        d["year"] = d["year"].astype(int)
+        d["month"] = d["month"].astype(int)
+        counts = d.groupby(["year", "month"]).size()
+        tables[cid] = counts
+        all_years.update(counts.index.get_level_values("year"))
+
+    if not tables:
+        print(f"  ! no {source} temporal data")
+        return None
+
+    # A common year axis across every panel: a campus with no records in a
+    # given year still shows that year as an all-zero row.
+    year_min, year_max = min(all_years), max(all_years)
+    years = list(range(year_min, year_max + 1))
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    grids = {}
+    for cid in ids:                      # every requested campus, not just
+        m = np.zeros((len(years), 12))   # ones with data, so a campus with
+        if cid in tables:                # zero records still gets a blank
+            for (yr, mo), n in tables[cid].items():   # (all-zero) panel
+                m[years.index(yr), mo - 1] = n
+        grids[cid] = m
+
+    all_counts = np.concatenate([g.ravel() for g in grids.values()])
+    if log:
+        disp = {cid: np.log10(g + 1) for cid, g in grids.items()}
+        vmax = vmax if vmax is not None else np.log10(all_counts.max() + 1)
+        vmin = 0
+        cbar_label = f"{name} records (log\u2081\u2080 scale)"
+    else:
+        disp = grids
+        vmax = vmax if vmax is not None else all_counts.max()
+        vmin = 0
+        cbar_label = f"{name} records"
+
+    n = len(ids)
+    ncols = min(ncols, n)
+    nrows = math.ceil(n / ncols)
+
+    # Panels are sized to keep individual cells legible even though only the
+    # edge panels carry axis labels; tight spacing keeps 40 of them from
+    # spreading into an oversized canvas.
+    panel_w = cell_size * 12 * 1.28
+    panel_h = cell_size * len(years) * 1.22
+    width = width or min(ncols * panel_w + 1.0, 16.0)
+    fig_h = min(nrows * panel_h + 0.55, 22.0)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width, fig_h))
+    axes = np.atleast_1d(axes).ravel()
+
+    im = None
+    for k, cid in enumerate(ids):
+        ax = axes[k]
+        im = ax.pcolormesh(disp[cid], cmap=cmap, vmin=vmin, vmax=vmax,
+                           edgecolors="white", linewidth=0.3)
+        ax.set_title(registry.display_name(cid), fontsize=9.5, pad=2.6)
+        ax.set_xlim(0, 12)
+        ax.set_ylim(0, len(years))
+        ax.invert_yaxis()
+
+        # Labels only on the outer edge: left column for years, bottom row
+        # for months. Interior panels stay label-free, matching the other
+        # small-multiple figures in this module.
+        row, col = divmod(k, ncols)
+        is_left = (col == 0)
+        is_bottom = (row == nrows - 1) or (k + ncols >= n)
+
+        if is_left:
+            ax.set_yticks(np.arange(len(years)) + 0.5)
+            ax.set_yticklabels([str(y) for y in years], fontsize=7.0)
+        else:
+            ax.set_yticks([])
+        if is_bottom:
+            ax.set_xticks(np.arange(12) + 0.5)
+            ax.set_xticklabels(month_labels, fontsize=7.0, rotation=90)
+        else:
+            ax.set_xticks([])
+
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+        ax.tick_params(length=0, pad=1)
+
+    for ax in axes[n:]:
+        ax.set_axis_off()
+
+    # No figure-level title: the colorbar label and panel titles already
+    # carry what a suptitle would say, and removing it lets the panel grid
+    # use the vertical space instead.
+    # Tight spacing between panels: gaps are kept small since no interior
+    # panel needs room for its own labels. top is pushed close to 1.0 now
+    # that there is no title reserving space above the grid, and bottom is
+    # pulled in so the colorbar sits close under the last row rather than
+    # floating in a wide empty band.
+    fig.subplots_adjust(left=0.055, right=0.99, top=0.97, bottom=0.075,
+                        wspace=0.10, hspace=0.18)
+
+    cax = fig.add_axes([0.30, 0.028, 0.40, 0.016])
+    cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+    cb.set_label(cbar_label, fontsize=9, labelpad=4)
+    cb.ax.tick_params(labelsize=7.5, length=2)
+    cb.outline.set_visible(False)
+
+    stem = save or f"fig8b_{'mly' if source == 'mapillary' else 'ggl'}_calendar"
+    maps.save_figure(fig, stem)
+    return fig, axes
+
 
 def fig_local_moran(campus_ids, source: str = "mapillary", ncols=8,
                     permutations: int = 199, save=None, show_area=False):
